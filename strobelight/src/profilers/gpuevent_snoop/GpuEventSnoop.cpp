@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "bpf/gpuevent_snoop.h"
+#include "bpf/gpumem_snoop.h"
 #ifdef FBCODE_STROBELIGHT
 #include "strobelight/src/profilers/gpuevent_snoop/gpuevent_snoop.skel.h"
 #else
@@ -23,6 +24,8 @@
 
 static const int64_t RINGBUF_MAX_ENTRIES = 64 * 1024 * 1024;
 static const std::string kCudaLaunchSymName = "cudaLaunchKernel";
+static const std::string kCudaMallocSymName = "cudaMalloc";
+static const std::string kCudaFreeSymName = "cudaFree";
 
 using namespace facebook::strobelight::oss;
 
@@ -232,6 +235,50 @@ int main(int argc, char* argv[]) {
       links.emplace_back(link);
     }
   }
+
+  offsets = symUtils.findSymbolOffsets(kCudaMallocSymName);
+  if (offsets.empty()) {
+    fmt::print(stderr, "Failed to find symbol {}\n", kCudaMallocSymName);
+    return -1;
+  }
+  for (auto& offset : offsets) {
+    auto link = bpf_program__attach_uprobe(
+        skel->progs.handle_cuda_malloc_enter,
+        false,
+        env.pid,
+        offset.first.c_str(),
+        offset.second);
+    if (link) {
+      links.emplace_back(link);
+    }
+    auto link = bpf_program__attach_uprobe(
+        skel->progs.handle_cuda_malloc_ret,
+        true,
+        env.pid,
+        offset.first.c_str(),
+        offset.second);
+    if (link) {
+      links.emplace_back(link);
+    }
+  }
+
+  offsets = symUtils.findSymbolOffsets(kCudaFreeSymName);
+  if (offsets.empty()) {
+    fmt::print(stderr, "Failed to find symbol {}\n", kCudaFreeSymName);
+    return -1;
+  }
+  for (auto& offset : offsets) {
+    auto link = bpf_program__attach_uprobe(
+        skel->progs.handle_cuda_free,
+        false,
+        env.pid,
+        offset.first.c_str(),
+        offset.second);
+    if (link) {
+      links.emplace_back(link);
+    }
+  }
+
   /* Set up ring buffer polling */
   ringBuffer = ring_buffer__new(
       bpf_map__fd(skel->maps.rb), handle_event, (void*)&symUtils, nullptr);
